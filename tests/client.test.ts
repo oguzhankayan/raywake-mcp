@@ -15,8 +15,11 @@ function quoteResponse(expires = Date.now() + 60_000) {
 }
 
 describe('HTTP and API contract', () => {
-  it('requires a key without printing it', () => {
-    expect(() => new RaywakeClient({ apiKey: '' })).toThrow('RAYWAKE_API_KEY is required');
+  it('starts without a key and asks for one on the first API call', async () => {
+    const fetcher = vi.fn();
+    const client = new RaywakeClient({ apiKey: '', fetch: fetcher as unknown as typeof fetch });
+    await expect(client.listCategories()).rejects.toThrow('RAYWAKE_API_KEY is required');
+    expect(fetcher).not.toHaveBeenCalled();
   });
   it.each(['http://example.com', 'https://user:secret@example.com', 'https://example.com?token=x', 'not-a-url'])('rejects unsafe base %s', baseUrl => {
     expect(() => new RaywakeClient({ apiKey: 'dummy', baseUrl })).toThrow('RAYWAKE_API_BASE');

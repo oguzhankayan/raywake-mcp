@@ -108,7 +108,6 @@ export class RaywakeClient {
   private readonly keys = new Map<string, string>();
 
   constructor(private readonly options: ClientOptions) {
-    if (!options.apiKey.trim()) throw new RaywakeError('RAYWAKE_API_KEY is required. Create a key at https://raywake.si/api-keys.');
     let base: URL;
     try { base = new URL(options.baseUrl ?? 'https://api.raywake.com'); }
     catch { throw new RaywakeError('RAYWAKE_API_BASE must be an HTTPS URL (HTTP is allowed for localhost mocks).'); }
@@ -124,6 +123,8 @@ export class RaywakeClient {
   private async request(path: string, options: {
     body?: JsonObject; key?: string; timeoutMs?: number; signal?: AbortSignal;
   } = {}): Promise<unknown> {
+    // The server starts and lists its tools without a key; the first API call explains what is missing.
+    if (!this.options.apiKey.trim()) throw new RaywakeError('RAYWAKE_API_KEY is required. Create a key at https://raywake.si/api-keys.');
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     const timer = setTimeout(onAbort, Math.max(1, options.timeoutMs ?? 15_000));
