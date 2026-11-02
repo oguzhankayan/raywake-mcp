@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "si.raywake/mcp",
+  "title": "Raywake",
+  "description": "500+ AI image, video and audio models with USD quotes and user-approved generation.",
+  "version": "0.1.0",
+  "websiteUrl": "https://raywake.si",
+  "repository": {
+    "url": "https://github.com/oguzhankayan/raywake-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@raywake/mcp",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "RAYWAKE_API_KEY",
+          "description": "Raywake API key from https://raywake.si/api-keys",
+          "isSecret": true,
+          "isRequired": true
+        },
+        {
+          "name": "RAYWAKE_API_BASE",
+          "description": "Optional API base URL override",
+          "default": "https://api.raywake.com",
+          "isRequired": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.raywake.com/v1"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "remoteAuthentication": "OAuth sign-in"
+    }
+  }
+}
