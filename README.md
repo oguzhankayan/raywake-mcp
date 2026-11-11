@@ -203,8 +203,6 @@ RAYWAKE_API_KEY=YOUR_RAYWAKE_API_KEY node dist/index.js
 
 `server.json` is the metadata published to the [official MCP Registry](https://registry.modelcontextprotocol.io) as `si.raywake/mcp`. Release and registry publication are separate manual steps. The npm package's `mcpName` matches `si.raywake/mcp`; version fields must stay in sync.
 
-The small TypeScript/npm/stdio layout is inspired by [Wiro-MCP](https://github.com/wiroai/Wiro-MCP) (MIT). Raywake uses its own Bearer authentication, quote-before-generation workflow and gateway contract. No Wiro source code is copied.
-
 ## License
 
 [MIT](LICENSE), copyright Raywake.
