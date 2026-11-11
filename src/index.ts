@@ -2,9 +2,11 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { RaywakeClient } from './client.js';
 import { createMcpServer } from './server.js';
+import { parseRoots, ROOTS_ENV } from './upload.js';
 
 try {
-  const client = new RaywakeClient({ apiKey: process.env.RAYWAKE_API_KEY ?? '', baseUrl: process.env.RAYWAKE_API_BASE });
+  const client = new RaywakeClient({ apiKey: process.env.RAYWAKE_API_KEY ?? '', baseUrl: process.env.RAYWAKE_API_BASE,
+    uploadRoots: parseRoots(process.env[ROOTS_ENV]) });
   const server = createMcpServer(client);
   await server.connect(new StdioServerTransport());
 } catch {

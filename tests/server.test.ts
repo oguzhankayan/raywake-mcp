@@ -17,14 +17,14 @@ async function connect() {
 afterEach(async () => { for (const { client, server } of sessions.splice(0)) { await client.close(); await server.close(); } });
 
 describe('MCP protocol', () => {
-  it('lists all nine tools with cost descriptions, schemas and annotations', async () => {
+  it('lists all eleven tools with cost descriptions, schemas and annotations', async () => {
     const { client, fetch } = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map(t => t.name).sort()).toEqual(['search_models', 'list_categories', 'get_model', 'quote', 'generate', 'get_job', 'list_jobs', 'get_account', 'get_playbook'].sort());
+    expect(tools.map(t => t.name).sort()).toEqual(['search_models', 'list_categories', 'get_model', 'quote', 'generate', 'get_job', 'list_jobs', 'get_account', 'get_playbook', 'upload_file', 'list_media'].sort());
     for (const tool of tools) {
       expect(tool.description).toMatch(tool.name === 'generate' ? /PAID.*approves/s : /Free/);
       expect(tool.inputSchema.type).toBe('object');
-      if (!['quote', 'generate'].includes(tool.name)) expect(tool.annotations?.readOnlyHint).toBe(true);
+      if (!['quote', 'generate', 'upload_file'].includes(tool.name)) expect(tool.annotations?.readOnlyHint).toBe(true);
     }
     expect(tools.find(t => t.name === 'generate')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
     expect(fetch).not.toHaveBeenCalled();
