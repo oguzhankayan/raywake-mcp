@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { LIMITS_TEXT, localHost, openMedia, putFile, UploadError, type PathPolicy } from './upload.js';
 
 export type JsonObject = Record<string, unknown>;
 export const TERMINAL_STATUSES = new Set([
@@ -94,10 +95,47 @@ function apiMessage(status: number, body: string): string {
   }
 }
 
+// Media routes answer with fixed sentences; these add the next step the assistant can take.
+const MEDIA_ERRORS: Record<number, [string, string]> = {
+  400: ['unsupported_type', `Raywake did not accept this file type or size. Accepted: ${LIMITS_TEXT}.`],
+  403: ['scope_missing', 'This API key needs the generate permission to add files. Enable it at https://raywake.si/api-keys.'],
+  404: ['not_found', 'That upload was not found for this account. Call upload_file again.'],
+  409: ['upload_failed', 'The file did not arrive. Call upload_file again with the same path.'],
+  410: ['reservation_expired', 'The upload reservation expired before it finished. Call upload_file again with the same path.'],
+  422: ['not_readable', 'Raywake could not read this as a valid image, video or audio file. Ask the user for another copy; do not convert or re-encode it without asking.'],
+  429: ['upload_limit', 'Upload limit reached: at most 3 unfinished uploads at once and 250 MB of stored files per account. Unfinished uploads expire after 30 minutes and files after 30 days; wait, then retry.'],
+  503: ['upload_failed', 'Raywake file storage is unavailable. Retry upload_file later; do not host the file anywhere else.'],
+};
+
+function mediaError(status: number, body: string): RaywakeError | undefined {
+  if (status === 401) return undefined;
+  if (status === 429 && !/upload limit/i.test(body)) return undefined;
+  if (status === 403 && !/generate/i.test(body)) {
+    return new RaywakeError('This API key cannot use uploaded files. Enable the generate permission at https://raywake.si/api-keys.', { error_code: 'scope_missing', http_status: status });
+  }
+  const known = MEDIA_ERRORS[status];
+  return known ? new RaywakeError(known[1], { error_code: known[0], http_status: status }) : undefined;
+}
+
+function ownedFile(value: unknown, base: string): string | undefined {
+  try {
+    const url = new URL(String(value));
+    const local = url.protocol === 'http:' && localHost(url.hostname) && new URL(base).protocol === 'http:';
+    if ((url.protocol !== 'https:' && !local) || !url.pathname.startsWith('/files/') || url.username || url.password) return undefined;
+    return url.href;
+  } catch { return undefined; }
+}
+
+const USE_URL = 'Put url unchanged into the model\'s matching image/video/audio URL input, then quote. The link stays valid for 7 days; the file is kept for 30 days in the user\'s Raywake files (list_media returns fresh links).';
+
 export interface ClientOptions {
   apiKey: string;
   baseUrl?: string;
   fetch?: typeof fetch;
+  /** Folders upload_file may read; default is the home folder and the working folder. */
+  uploadRoots?: string[];
+  home?: string;
+  cwd?: string;
 }
 
 export class RaywakeClient {
@@ -121,7 +159,7 @@ export class RaywakeClient {
   }
 
   private async request(path: string, options: {
-    body?: JsonObject; key?: string; timeoutMs?: number; signal?: AbortSignal;
+    body?: JsonObject; key?: string; timeoutMs?: number; signal?: AbortSignal; method?: 'GET' | 'POST'; media?: boolean;
   } = {}): Promise<unknown> {
     // The server starts and lists its tools without a key; the first API call explains what is missing.
     if (!this.options.apiKey.trim()) throw new RaywakeError('RAYWAKE_API_KEY is required. Create a key at https://raywake.si/api-keys.');
@@ -132,7 +170,7 @@ export class RaywakeClient {
     if (options.signal?.aborted) controller.abort();
     try {
       const response = await this.fetcher(`${this.baseUrl}${path}`, {
-        method: options.body ? 'POST' : 'GET',
+        method: options.method ?? (options.body ? 'POST' : 'GET'),
         headers: { Authorization: `Bearer ${this.options.apiKey}`, Accept: 'application/json',
           ...(options.body ? { 'Content-Type': 'application/json' } : {}),
           ...(options.key ? { 'Idempotency-Key': options.key } : {}) },
@@ -141,6 +179,8 @@ export class RaywakeClient {
       });
       if (!response.ok) {
         const body = await response.text();
+        const media = options.media ? mediaError(response.status, body) : undefined;
+        if (media) throw media;
         throw new RaywakeError(apiMessage(response.status, body), {
           http_status: response.status,
           ...(response.headers.get('retry-after') ? { retry_after: response.headers.get('retry-after') } : {}),
@@ -278,5 +318,66 @@ export class RaywakeClient {
       available_usd: raw.available_usd ?? usd(raw.available_credits),
       reserved_usd: raw.reserved_usd ?? usd(raw.reserved_credits),
       debt_usd: raw.debt_usd ?? usd(raw.debt_credits) };
+  }
+
+  /** Upload one local file and return its owned Raywake URL. Free; nothing is generated. */
+  async uploadFile(filePath: string, signal?: AbortSignal) {
+    const policy: PathPolicy = { roots: this.options.uploadRoots, home: this.options.home, cwd: this.options.cwd };
+    let file;
+    try { file = await openMedia(filePath, policy); }
+    catch (error) {
+      if (error instanceof UploadError) throw new RaywakeError(error.message, { error_code: error.code });
+      throw new RaywakeError('This file could not be read.', { error_code: 'not_readable' });
+    }
+    try {
+      const reserved = object(await this.request('/v1/media-assets', {
+        body: { content_type: file.contentType, size_bytes: file.size }, media: true, signal,
+      }));
+      let target: URL | undefined;
+      try { target = new URL(String(reserved.upload_url)); } catch { /* checked below */ }
+      if (typeof reserved.id !== 'string' || !/^[0-9a-f-]{36}$/.test(reserved.id) || !target ||
+        !(target.protocol === 'https:' || (target.protocol === 'http:' && localHost(target.hostname)))) {
+        throw new RaywakeError('Raywake returned an incomplete upload reservation. Try upload_file again later.', { error_code: 'upload_failed' });
+      }
+      const assetId = reserved.id;
+      // One retry on the same reservation covers a dropped connection; the signed link lives 15 minutes.
+      let status = 0;
+      for (let attempt = 0; attempt < 2 && !(status >= 200 && status < 300); attempt++) {
+        try { status = await putFile(target, file, { signal }); }
+        catch { status = 0; }
+        if (signal?.aborted || (status >= 400 && status < 500)) break;
+      }
+      if (!(status >= 200 && status < 300)) {
+        throw new RaywakeError('The file upload did not finish. Retry upload_file with the same path; unfinished uploads expire after 30 minutes and at most 3 can be open at once. Do not host the file anywhere else.', {
+          error_code: 'upload_failed', ...(status ? { http_status: status } : {}),
+        });
+      }
+      const ready = object(await this.request(`/v1/media-assets/${encodeURIComponent(assetId)}/complete`, {
+        method: 'POST', media: true, signal, timeoutMs: 120_000,
+      }));
+      const url = ownedFile(ready.url, this.baseUrl);
+      if (!url) throw new RaywakeError('Raywake returned an unexpected file link. Try upload_file again later.', { error_code: 'upload_failed' });
+      const contentType = String(ready.content_type ?? file.contentType);
+      return { asset_id: assetId, url, kind: contentType.split('/')[0], content_type: contentType,
+        size_bytes: ready.size_bytes ?? file.size, file_name: file.name, kept_until: ready.retention_expires_at ?? null, use: USE_URL };
+    } finally {
+      await file.handle.close();
+    }
+  }
+
+  /** The account's uploaded input files, newest first. */
+  async listMedia(page = 1) {
+    const pageSize = 20;
+    const query = new URLSearchParams({ kind: 'upload', limit: String(pageSize + 1), offset: String((page - 1) * pageSize) });
+    const raw = object(await this.request(`/v1/storage?${query}`));
+    const rows = (Array.isArray(raw.items) ? raw.items : []).map(object).filter(item => item.kind === 'upload');
+    const files = rows.slice(0, pageSize).flatMap(item => {
+      const url = ownedFile(item.url, this.baseUrl);
+      if (!url) return [];
+      const contentType = String(item.content_type ?? '');
+      return [{ asset_id: item.id, url, kind: contentType.split('/')[0], content_type: contentType,
+        size_bytes: item.size_bytes ?? null, added_at: item.created_at ?? null, kept_until: item.expires_at ?? null }];
+    });
+    return { files, page, next_page: rows.length > pageSize || raw.has_more === true ? page + 1 : null };
   }
 }
